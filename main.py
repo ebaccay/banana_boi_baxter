@@ -18,6 +18,8 @@ from moveit_msgs.srv import GetPositionIK, GetPositionIKRequest, GetPositionIKRe
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import PoseStamped
 from moveit_commander import MoveGroupCommander
+# Custom Imports
+import image_processing
 
 ################################################################################
 #                               SECTION ONE (1)                                #
