@@ -117,8 +117,6 @@ def cluster_segment(img, n_clusters, random_state=0):
     print(img.shape)
     img_d = block_reduce(img, block_size=(2, 2, 1), func=np.mean)
 
-    # TODO: Generate a clustered image using K-means
-
     # first convert our 3-dimensional img_d array to a 2-dimensional array
     # whose shape will be (length * width, number of channels) hint: use img_d.shape
     shape = img_d.shape
