@@ -1,4 +1,9 @@
 #!/usr/bin/env
+
+################################################################################
+#                               SECTION ZERO (0)                               #
+################################################################################
+
 # Module Imports
 import rospy
 import cv2, cv_bridge
@@ -14,77 +19,70 @@ from sensor_msgs.msg import Image
 from geometry_msgs.msg import PoseStamped
 from moveit_commander import MoveGroupCommander
 
+################################################################################
+#                               SECTION ONE (1)                                #
+################################################################################
+
 # Hardcoded Variable Definitions
 img_capture_pos = [0.820, -0.070, -0.021]
 knife_wait_pos = [0.050, 0.850, 0.068]
-img_wait_pos = [0, 0, 0] # TODO: Change this to correct coordinates
+gripper_wait_pos = [0, 0, 0]
+final_knife_cut_pos = [0, 0, 0]
+img_wait_pos = [0, 0, 0]
 
 default_gripper_orientation = [0.0, 1.0, 0.0, 0.0]
 table_height_robot_space = -0.362
+table_preheight_robot_space = table_height_robot_space + 0.152
 
 knife_arm = 'left'
 camera_arm = 'right'
+gripper_arm = 'right'
 img_capture_camera = '/cameras/left_hand_camera/image'
-img_pixel_width = 50  #FIXME: Get the right number
-img_pixel_height = 50 # FIXME: Get the right number
+img_pixel_width = 320
+img_pixel_height = 200
 
-table_width = 50 # FIXME: Get the right number in METERS
-table_height = 50 # FIXME: Get the right number in METERS
+table_width = 0.914
+table_height = 0.609
 
 pixel_mapping = get_pixel_mapping()
 
+################################################################################
+#                               SECTION TWO (2)                               #
+################################################################################
 
 def main():
-	move_to(knife_start_pos.extend(default_gripper_orientation), knife_arm)
-	move_to(img_capture_pos.extend(default_gripper_orientation), camera_arm)
-	clustered_img, normal_img = img_capture(img_capture_camera)
+	# <--------- SUBSECTION A ----------> #
+	# Move to reset postion
+	move_to(knife_start_pos, default_gripper_orientation, knife_arm)
+	move_to(img_capture_pos, default_gripper_orientation, camera_arm)
+	clustered_img, normal_img = img_capture(img_capture_camera)  # Returns int ndarray
+	points = grab_relevant_points(clustered_img)
+	quaternion_axis = calc_axis(masked_img)  # PCA Calculation to acquire correct axis
+	banana_centroid = pixel_mapping(tuple(centroids(points)))  # Centroid calculation to acquire banana position
 
+	# <--------- SUBSECTION B ----------> #
+	banana_pre_pos = banana_centroid + [table_preheight_robot_space]
+	banana_final_pos = banana_centroid + [table_height_robot_space]
+	move_to(banana_pre_pos, quaternion_axis, gripper_arm)
+	move_to(banana_final_pos, quaternion_axis, gripper_arm)
 
-	#Clustered img returns an int ndarray
+	move_to(banana_pre_pos, quaternion_axis, gripper_arm)
+	move_to(final_knife_cut_pos, quaternion_axis, gripper_arm)
+	move_to(gripper_wait_pos, default_gripper_orientation, gripper_arm)
+	move_to(final_knife_cut_pos, quaternion_axis, knife_arm)
 
-	#Mask array and only select the 1's from the cluster using mask to run PCA on
-	#Wait actually coordinate array wont match shape cause its got tuples while clustered_img does not so gotta do something  about that
-	masked_img = ma.masked_where(clustered_img == 2,  coordinate_array)
-	#Time to run the PCA guy
+	# <--------- SUBSECTION C ----------> #
+	# Time to do some Cutting
+	all_x_points = [p[0] for p in points]
+	all_y_points = [p[1] for p in points]
+	start_pos = [min(all_x_points), min(all_y_points)]
+	end_pos = [max(all_x_points), max(all_y_points)]
 
+	run_cut_routine(start_pos, end_pos, 4, quaternion_axis)
 
-	#First component gives banana axis and we want to pick orthogonal to that so that should just be the second component
-	components = calc_axis(masked_img)
-	pick_along = components[1]
-
-
-	#TODO convert the component to the right rotation in terms of baxter wrist
-
-	#TODO calculate center of banana from pixels
-
-
-	banana_pos = [x_banana, y_banana, z, 0, 1, yaw, 0]
-
-	move_to(banana_pos, "right")
-
-	#TODO gripper shit its on the computer gotta find it but this will close up grippers
-
-	#Move banana up to not drag across table
-
-	banana_pos[2] = -0.021
-
-	#AR tag location or hardcode location
-	final_des = [x_final, y_final, z, 0, 1, 0, 0]
-
-	move_to(final_des, "right")
-
-	#TODO Open Gripper
-
-	#Move away right arm just play around with this and hardcode it like the starting position
-
-	right_arm_final = [1, 1, 1, 0, 1, 0, 0]
-	move_to(right_arm_final, "right")
-
-	#Time to do some Cutting
-
-	run_cut_routine()
-
-
+################################################################################
+#                              SECTION THREE (3)                               #
+################################################################################
 
 def img_capture(topic):
 	bridge = cv_bridge.CvBridge()
@@ -117,28 +115,50 @@ def get_pixel_mapping():
 	for x in img_pixel_width:
 		bottom_curr = img_capture_pos[1] - (float(table_height) / 2)
 		for y in img_pixel_height:
-			pixel_mapping[(x, y)] = [left_curr, bottom_curr, table_height_robot_space]
+			pixel_mapping[(x, y)] = [left_curr, bottom_curr]
 			bottom_curr += pixel_y_differential
 		left_curr += pixel_x_differential
 
 	return pixel_mapping
 
 
-
-
-
-
-
-
-
-
 def calc_axis(img):
 	pca = PCA(n_components = 2)
 	pca.fit(img)
-	return pca_components_
+	first_comp = pca_components_[1]
+	return to_quaternion(-np.pi, 0, np.arctan(firstcomp[0] / firstcomp[1]))
 
 
-def move_to(coordinates, move_arm):
+def to_quaternion(yaw, pitch, roll):
+    return [
+		np.sin(roll/2) * np.cos(pitch/2) * np.cos(yaw/2) - np.cos(roll/2) * np.sin(pitch/2) * np.sin(yaw/2),
+		np.cos(roll/2) * np.sin(pitch/2) * np.cos(yaw/2) + np.sin(roll/2) * np.cos(pitch/2) * np.sin(yaw/2),
+		np.cos(roll/2) * np.cos(pitch/2) * np.sin(yaw/2) - np.sin(roll/2) * np.sin(pitch/2) * np.cos(yaw/2),
+		np.cos(roll/2) * np.cos(pitch/2) * np.cos(yaw/2) + np.sin(roll/2) * np.sin(pitch/2) * np.sin(yaw/2)
+	]
+
+
+def centroids(points):
+	num_points = len(points)
+	x_sum = sum([p[0] for p in points])
+	y_sum = sum([p[1] for p in points])
+	return [x_sum / num_points, y_sum / num_points]
+
+
+def grab_relevant_points(xy_points):
+	relevant_points = []
+	for x in range(len(xy_points)):
+		for y in len(xy_points[0]):
+			if xy_points[x][y] > 0.5:
+				relevant_points.append([x, y])
+	return relevant_points
+
+
+def move_to(coordinates, quaternion, move_arm):
+	complete_position = coordinates.copy()
+	complete_position.extend(quaternion)
+	coordinates = complete_position
+
     #CODE MODELED OFF IK EXAMPLE IN LAB 5
     #Wait for the IK service to become available
     rospy.wait_for_service('compute_ik')
@@ -182,40 +202,20 @@ def move_to(coordinates, move_arm):
             print "Service call failed: %s"%e
 
 
-def run_cut_routine(start_coords, end_coords, num_cuts):
-	start_x, start_y, start_z = start_coords[0], start_coords[1], start_coords[2]
-	end_x, end_y, end_z = end_coords[0], end_coords[1], end_coords[2]
+def run_cut_routine(start_coords, end_coords, num_cuts, quaternion_axis):
+	start_x, start_y = start_coords[0], start_coords[1]
+	end_x, end_y = end_coords[0], end_coords[1]
 	delta_x = float(end_x - start_x) / num_cuts
 	delta_y = float(end_y - start_y) / num_cuts
-	delta_z = float(end_z - start_z) / num_cuts
 
+    while curr_x < end_x and curr_y < end_y:
+	    start_cut_postion = [curr_x, curr_y, table_preheight_robot_space]
+		end_cut_position = [curr_x, curr_y, table_height_robot_space]
 
-
-
-        #Wait for the IK service to become available
-    rospy.wait_for_service('compute_ik')
-    rospy.init_node('service_query')
-    arm = move_arm
-    #Create the function used to call the service
-    compute_ik = rospy.ServiceProxy('compute_ik', GetPositionIK)
-    while not rospy.is_shutdown():
-        # raw_input('Press [ Enter ]: ')
-        start_cut_postion = [start_x, start_y, start_z, 0, 1, 0, 0]
-        move_to(start_cut_postion, "left")
-
-        while no_cuts:
-            #IDK which directions the axis is so it could be plus or minus. I'm just using plus for now
-            #Finish This
-            new_x = start_x
-            new_y = start_y
-            new_z = z  #this is cutting motion
-
-            temp_pos = [new_x, new_y, new_z, 0, 1, 0, 0]
-            move_to(temp_pos, "left")
-
-            #Bring Knife UP
-            temp_pos[2] = new_z + delta_z
-            move_to(temp_pos " left")
+	    move_to(start_cut_postion, quaternion_axis, knife_arm)
+	    move_to(end_cut_postion, quaternion_axis, knife_arm)
+		move_to(start_cut_postion, quaternion_axis, knife_arm)
+		curr_x, cuyy_y = curr_x + delta_x, curr_y + delta_y
 
 
 if __name__ == "__main__":
